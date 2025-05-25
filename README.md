@@ -12,4 +12,4 @@ This repo is intentionally **not** pip-installable. Each utility is implemented 
 
 There's no logic behind the project name. I wanted to call it 'ml-bazaar', but that was already taken. After clicking through synonyms-of-synonyms a few times, the word _polychromatic_ came up and I thought it sounded cool. This reminded me of a KGLW song called tetrachromacy, which, I think is fair to say, is even cooler.
 
-Similarly, this project uses a variant of [sentimental versioning](github.com/dominictarr/sentimental-versioning/) that I came up with whilst hungover. In an effort to establish this codebase as the fastest growing project in the universe, major versions will be numbered following the [busy-beaver](https://en.wikipedia.org/wiki/Busy_beaver) sequence.
+Similarly, this project uses a variant of [sentimental versioning](https://github.com/dominictarr/sentimental-versioning/) that I came up with whilst hungover. In an effort to establish this codebase as the fastest growing project in the universe, major versions will be numbered following the [busy-beaver](https://en.wikipedia.org/wiki/Busy_beaver) sequence.
