@@ -1,6 +1,28 @@
-"""JAX+NNX reimplementation of the EDM2 architecture by Karras et al."""
+"""
+===================================
+░▒▓ T E T R A C H R O M A T I C ▓▒░
+===================================
 
-# Written by C Jones, 2025. MIT License.
+JAX+NNX reimplementation of the EDM2 architecture by Karras et al [1].
+[1] arxiv.org/abs/2312.02696
+
+This architecture is primarily built on the insight that the scale of network
+activations in the classic OpenAI ADM UNet varies with depth and training
+time. Karras et al. designed a set of magnitude-preserving layers that
+helps to improve the training dynamics of the UNet model.
+
+It is best used alongside an inverse-square root decay schedule and with a
+larger-than-normal learning rate. Notably, Karras et al. use Adam, not
+AdamW. I suspect this is because weight decay may interact oddly with the
+magnitude-preserving layers.
+
+To use, just copy-paste this file into your project. Feel free to
+delete this docstring -- the code is yours now!
+
+(although I do ask you to please keep the license comment below <3)
+"""
+
+# Forked from github.com/Charl-AI/tetrachromatic under MIT license.
 
 import jax
 import jax.numpy as jnp

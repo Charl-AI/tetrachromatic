@@ -5,8 +5,8 @@ import pytest
 import torch
 from flax import nnx
 
-import ml_utils.jax_edm2 as jaxedm
-import tests.edm2 as torchedm
+import edm2.jax_edm2 as jaxedm
+import edm2.torch_edm2 as torchedm
 
 torch.manual_seed(42)
 
