@@ -105,8 +105,8 @@ class MPConv(nnx.Module):
         )
 
     def __call__(self, x: jax.Array, gain: float = 1):
-        w = self.weight.astype(jnp.float32)
-        w = normalize(w)  # forced weight normalisation
+        self.w = normalize(self.weight.astype(jnp.float32))
+        w = self.w
         w = w * (gain / jnp.sqrt(w[0].size))  # MP-scaling
         w = w.astype(x.dtype)
         if w.ndim == 2:
