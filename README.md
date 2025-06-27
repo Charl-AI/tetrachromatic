@@ -2,11 +2,12 @@
 
 This repo contains self-contained utilities and snippets that I often find myself reaching for in machine learning projects.
 
-This repo is intentionally **not** pip-installable. Each utility is implemented as a single file which you can copy-paste into your projects.
+This repo is intentionally **not** pip-installable. Each utility is implemented as a single file which you can copy-paste into your projects. Documentation primarily takes the form of a long docstring at the beginning of each file. I've also tried my best to include the most relevant references wherever possible.
 
 ## Utils
 
-- **edm2** JAX reimplementation of the Karras et al. EDM2 UNet architecture.
+- **edm2/** (WIP) JAX reimplementation of the Karras et al. EDM2 UNet architecture.
+- **schedulers/** A simple collection of stateless learning rate schedulers.
 
 ## On project versioning and naming
 
