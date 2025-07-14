@@ -146,11 +146,7 @@ class Distributed:
         self._local_rank = dist_env.local_rank
         self._world_size = dist_env.world_size
         self._local_world_size = dist_env.local_world_size
-
-        # If CUDA_VISIBLE_DEVICES is set properly, the only device
-        # visible to each process is the correct GPU for the local rank
-        self._device = torch.device("cuda")
-
+        self._device = torch.device(f"cuda:{self._local_rank}")
         torch.cuda.set_device(self._device)
         self.barrier()
 
