@@ -25,7 +25,7 @@ assert id(D1) == id(D2)
 
 The singleton style enables two distinct usage patterns:
 
-1. Dependency injection pattern.
+1. Dependency injection pattern (recommended).
 ```python
 def my_func(arg1, arg2, D: Distributed):
     rank = D.rank
@@ -37,7 +37,7 @@ D = Distributed()  # setup
 my_func(arg1, arg2, D)
 ```
 
-2. Global variable pattern.
+2. Global variable pattern (yuck).
 ```python
 def my_func(arg1, arg2):
     rank = Distributed().rank
@@ -45,7 +45,7 @@ def my_func(arg1, arg2):
     print(f"{rank=}, {world_size=}")
     ... # do something with arg1, arg2
 
-Distributed()  # setup (not strictly needed)
+Distributed()  # setup
 my_func(arg1, arg2)
 
 ```
@@ -56,24 +56,12 @@ to every function where it is needed. The global variable
 approach avoids this work, but makes it harder to inspect
 functions that depend on it.
 
-To try and get the best of both worlds, I've included an
-optional experimental decorator that can be used to inject
-the object as an argument to functions without plumbing
-it throughout your code:
-
-3. Decorator.
+You can use the Distributed object as a context manager
+to enable safe teardown of the processes at the end:
 ```python
-@distributed
-def my_func(arg1, arg2, *, D: Distributed):
-    rank = D.rank
-    world_size = D.world_size
-    print(f"{rank=}, {world_size=}")
-    ... # do something with arg1, arg2
-
-D = Distributed()        # setup (not strictly needed)
-my_func(arg1, arg2)      # no need to pass D to my_func
-my_func(arg1, arg2, D=D) # but equally, no problem if you decide to
-
+with Distributed() as D:
+    ... # you can use D here!
+    model.to(D.device)
 ```
 ---
 
@@ -91,15 +79,18 @@ delete this docstring -- the code is yours now!
 
 # Forked from github.com/Charl-AI/tetrachromatic under MIT license.
 
-import builtins
+import atexit
 import functools
 import inspect
+import logging
 import os
 from typing import Literal
 
 import torch
 import torch.distributed as dist
 from submitit.helpers import TorchDistributedEnvironment
+
+log = logging.getLogger(__name__)
 
 
 def singleton(cls):
@@ -118,17 +109,16 @@ def singleton(cls):
 @singleton
 class Distributed:
     def __init__(self):
-        print = functools.partial(builtins.print, flush=True)
         dist_env = TorchDistributedEnvironment()
         dist_env.export(set_cuda_visible_devices=True, overwrite=True)
 
-        print("Setting up Distributed environment")
-        print(f"Master: {dist_env.master_addr}:{dist_env.master_port}")
-        print(f"Rank: {dist_env.rank}")
-        print(f"Local rank: {dist_env.local_rank}")
-        print(f"Visible device ID: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
-        print(f"World size: {dist_env.world_size}")
-        print(f"Local world size: {dist_env.local_world_size}")
+        log.info(msg="Setting up Distributed environment")
+        log.info(msg=f"Master: {dist_env.master_addr}:{dist_env.master_port}")
+        log.info(msg=f"Rank: {dist_env.rank}")
+        log.info(msg=f"Local rank: {dist_env.local_rank}")
+        log.info(msg=f"Visible device ID: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
+        log.info(msg=f"World size: {dist_env.world_size}")
+        log.info(msg=f"Local world size: {dist_env.local_world_size}")
 
         dist.init_process_group(
             backend="nccl",
@@ -138,9 +128,8 @@ class Distributed:
         assert dist_env.rank == dist.get_rank()
         assert dist_env.world_size == dist.get_world_size()
 
-        # assume one process per GPU, where each process gets the GPU index
-        # corresponding to local_rank
-        assert dist_env.local_rank == int(os.environ.get("CUDA_VISIBLE_DEVICES"))  # type:ignore
+        # assume one process per GPU, each process gets GPU index == local rank
+        assert dist_env.local_rank == int(os.environ.get("CUDA_VISIBLE_DEVICES"))  # type: ignore
 
         self._rank = dist_env.rank
         self._local_rank = dist_env.local_rank
@@ -148,7 +137,23 @@ class Distributed:
         self._local_world_size = dist_env.local_world_size
         self._device = torch.device(f"cuda:{self._local_rank}")
         torch.cuda.set_device(self._device)
+
+        atexit.register(self._cleanup)  # cleanup hook on program exit
         self.barrier()
+
+    def __enter__(self):
+        log.info("Entering Distributed context. All processes synchronizing.")
+        self.barrier()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        del exc_type, exc_val, exc_tb
+        self._cleanup()
+
+    def _cleanup(self):
+        if dist.is_initialized():
+            log.info(f"Rank {self.rank} destroying process group.")
+            dist.destroy_process_group()
 
     @property
     def world_size(self) -> int:
@@ -223,45 +228,6 @@ class Distributed:
             return x
         else:
             return x
-
-    def __del__(self):
-        if dist.is_initialized():
-            dist.destroy_process_group()
-
-
-def distributed(func):
-    """Decorate a function to inject the `Distributed` singleton.
-    Requires you to reserve `D` as a keyword-only argument.
-
-    Usage:
-    ```python
-    @distributed
-    def my_func(arg1, arg2, *, D: Distributed):
-        # you can use D like normal!
-        ...
-
-    my_func(arg1, arg2)  # no need to pass D here
-    ```
-    """
-
-    # you may be wondering why we can't simply provide D=Distributed()
-    # as a default argument to func. The issue with this is that Distributed()
-    # would be called at function creation time, not when the function is called.
-    # This would cause us to lose control of when to initialise the process group.
-    # For example, when using submitit, you don't want to call Distributed()
-    # until you are inside the running job (i.e. in the submitted callable).
-
-    signature = inspect.signature(func)
-    assert "D" in signature.parameters
-    assert signature.parameters["D"].kind == inspect.Parameter.KEYWORD_ONLY
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if "D" not in kwargs:
-            kwargs["D"] = Distributed()
-        return func(*args, **kwargs)
-
-    return wrapper
 
 
 def rank_zero(barrier: bool = False):
