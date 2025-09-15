@@ -12,6 +12,8 @@ mapping the current step to the current lr. For convenience, I
 also provide the option to pass in a PyTorch optimiser object and
 set its lr as a side effect.
 
+---
+
 To emphasise simplicity and statelessness, the schedulers are implemented
 as frozen, callable, dataclasses. While they take arguments at
 initialisation-time, these just serve to fix the function parameters.
@@ -24,6 +26,23 @@ When using with PyTorch, these schedulers do not need to be
 saved in checkpoints or moved to GPU. I've used them in up to 32-GPU
 distributed training (DDP) setups and they have never been a bottleneck.
 
+---
+
+How to choose a scheduler:
+
+- if you are using a pretrain-finetune strategy, use ConstantLR for
+  pretraining and CooldownLR for finetuning.
+- if you know the amount of steps you want to train for in advance,
+  CosineLR is generally sensible.
+- if you don't want to commit to a number of steps in advance and
+  want a reasonable and somewhat principled default, use InvSqrtL.
+
+In my experience (mostly training 1B+ param vision diffusion models),
+these rules of thumb should serve you fairly well. I don't have
+much experience on LLMs, so YMMV.
+
+---
+
 To use, just copy-paste this file into your project. Feel free to
 delete this docstring -- the code is yours now!
 
@@ -31,6 +50,8 @@ delete this docstring -- the code is yours now!
 """
 
 # Forked from github.com/Charl-AI/tetrachromatic under MIT license.
+
+from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
@@ -45,7 +66,10 @@ def _set_lr(optimizer: torch.optim.Optimizer | None, lr: float) -> None:
     if optimizer is None:
         return
     for pg in optimizer.param_groups:
-        pg["lr"] = lr  # in-place update
+        # avoids recompilation when using torch.compile
+        if not isinstance(pg["lr"], torch.Tensor):
+            pg["lr"] = torch.tensor(pg["lr"])
+        pg["lr"].fill_(lr)  # in-place update
 
 
 @dataclass(frozen=True)
@@ -79,61 +103,56 @@ class Scheduler(ABC):
 
 @dataclass(frozen=True)
 class ConstantLR(Scheduler):
-    """Constant learning rate. Mostly useful as a dummy scheduler."""
+    """Constant learning rate with optional warmup from min_lr to max_lr."""
 
-    lr: float
+    max_lr: float
+    min_lr: float = 0
+    warmup_steps: int = 0
 
     def __call__(
         self,
         global_step: int,
         optimizer: torch.optim.Optimizer | None = None,
     ) -> float:
-        del global_step
-        _set_lr(optimizer, self.lr)
-        return self.lr
+        if self.warmup_steps != 0 and global_step <= self.warmup_steps:
+            t = global_step / self.warmup_steps
+            new_lr = t * self.max_lr + (1 - t) * self.min_lr
+        else:
+            new_lr = self.max_lr
+
+        new_lr = max(self.min_lr, min(self.max_lr, new_lr))  # clip if needed
+        _set_lr(optimizer, new_lr)
+        return new_lr
 
 
 @dataclass(frozen=True)
-class LinearLR(Scheduler):
-    """Linear warmup followed by linear decay (triangular shape).
-
-    Bergsma et al. [1] find that a linear schedule with min_lr=0
-    works particularly well for training LLMs with AdamW.
-
-    [1] https://arxiv.org/abs/2502.15938
+class CooldownLR(Scheduler):
+    """Linearly decay from max_lr to min_lr over cooldown_steps.
+    This is generally useful for finetuning at the end of long,
+    constant lr training runs (see Hägele et al. [1]).
+    [1] https://arxiv.org/abs/2405.18392v3.
     """
 
-    warmup_steps: int
-    total_steps: int
-    min_lr: float
     max_lr: float
+    min_lr: float
+    cooldown_steps: int
 
     def __call__(
         self,
         global_step: int,
         optimizer: torch.optim.Optimizer | None = None,
     ) -> float:
-        new_lr: float
-        decay_steps = max(1, self.total_steps - self.warmup_steps)
+        t = global_step / self.cooldown_steps
+        new_lr = t * self.min_lr + (1 - t) * self.max_lr
 
-        if global_step <= self.warmup_steps:  # linear warmup
-            new_lr = self.min_lr + global_step / self.warmup_steps * (
-                self.max_lr - self.min_lr
-            )
-        else:
-            steps_into_decay = global_step - self.warmup_steps
-            decay_progress = min(1.0, steps_into_decay / decay_steps)
-            new_lr = self.max_lr + decay_progress * (self.min_lr - self.max_lr)
-
-        # clip to min/max
-        new_lr = max(self.min_lr, min(self.max_lr, new_lr))
+        new_lr = max(self.min_lr, min(self.max_lr, new_lr))  # clip if needed
         _set_lr(optimizer, new_lr)
         return new_lr
 
 
 @dataclass(frozen=True)
 class CosineLR(Scheduler):
-    """Cosine learning rate scheduler with linear warmup.
+    """Cosine learning rate scheduler with optional linear warmup.
     For LLMs, it's common practice to set min_lr = 0.1 * max_lr.
     See Chinchilla [1] for arguably the best known usage.
 
@@ -144,21 +163,21 @@ class CosineLR(Scheduler):
     # forked from github.com/apple/ml-tarflow under Apple open source license:
     # https://github.com/apple/ml-tarflow/blob/main/LICENSE
 
-    warmup_steps: int
-    total_steps: int
-    min_lr: float
     max_lr: float
+    min_lr: float
+    total_steps: int
+    warmup_steps: int = 0
 
     def __call__(
         self,
         global_step: int,
         optimizer: torch.optim.Optimizer | None = None,
     ) -> float:
-        if global_step <= self.warmup_steps:  # linear warmup
+        if self.warmup_steps != 0 and global_step <= self.warmup_steps:
             new_lr = self.min_lr + global_step / self.warmup_steps * (
                 self.max_lr - self.min_lr
             )
-        else:  # cosine decay
+        else:
             t = (global_step - self.warmup_steps) / (
                 self.total_steps - self.warmup_steps
             )
@@ -166,8 +185,7 @@ class CosineLR(Scheduler):
                 self.max_lr - self.min_lr
             )
 
-        # clip to min/max
-        new_lr = max(self.min_lr, min(self.max_lr, new_lr))
+        new_lr = max(self.min_lr, min(self.max_lr, new_lr))  # clip if needed
         _set_lr(optimizer, new_lr)
         return new_lr
 
@@ -203,9 +221,9 @@ class InvSqrtLR(Scheduler):
     # They train for ~1M steps, resulting in a final lr of ~0.0017
     # and final decay factor of ~5x
 
+    max_lr: float
     warmup_steps: int
     constant_steps: int
-    max_lr: float
 
     def __call__(
         self,
