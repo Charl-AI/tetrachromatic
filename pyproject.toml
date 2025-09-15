@@ -6,7 +6,10 @@ requires-python = "~=3.13"
 dependencies = [
     "flax>=0.10.6",
     "jax>=0.6.0",
+    "matplotlib>=3.10.6",
     "numpy>=2.2.5",
+    "pillow>=11.2.1",
     "pytest>=8.3.5",
+    "submitit>=1.5.3",
     "torch>=2.7.0",
 ]
