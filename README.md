@@ -6,7 +6,7 @@ This repo is intentionally **not** pip-installable. Each utility is implemented 
 
 ## Utils
 
-- **edm2/** (WIP) JAX reimplementation of the Karras et al. EDM2 UNet architecture.
+- **distributed/** Utils for PyTorch distributed training.
 - **schedulers/** A simple collection of stateless learning rate schedulers.
 
 ## On project versioning and naming
