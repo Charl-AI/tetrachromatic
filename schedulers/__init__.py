@@ -12,16 +12,6 @@ mapping the current step to the current lr. For convenience, I
 also provide the option to pass in a PyTorch optimiser object and
 set its lr as a side effect.
 
----
-
-To emphasise simplicity and statelessness, the schedulers are implemented
-as frozen, callable, dataclasses. While they take arguments at
-initialisation-time, these just serve to fix the function parameters.
-I.e.
-> scheduler = ParametricScheduler(parameter=x)
-is conceptually equivalent to
-> scheduler = partial(parametric_scheduler_fn, parameter=x)
-
 When using with PyTorch, these schedulers do not need to be
 saved in checkpoints or moved to GPU. I've used them in up to 32-GPU
 distributed training (DDP) setups and they have never been a bottleneck.
@@ -30,16 +20,18 @@ distributed training (DDP) setups and they have never been a bottleneck.
 
 How to choose a scheduler:
 
-- if you are using a pretrain-finetune strategy, use ConstantLR for
-  pretraining and CooldownLR for finetuning.
+- if you are using a pretrain-then-finetune strategy, use ConstantLR
+  for pretraining and CooldownLR for finetuning.
+
 - if you know the amount of steps you want to train for in advance,
-  CosineLR is generally sensible.
+  CosineLR with warmup and min_lr = 0.1 * max_lr is generally sensible.
+
 - if you don't want to commit to a number of steps in advance and
-  want a reasonable and somewhat principled default, use InvSqrtL.
+  want a reasonable and somewhat principled default, use InvSqrtLR.
 
 In my experience (mostly training 1B+ param vision diffusion models),
 these rules of thumb should serve you fairly well. I don't have
-much experience on LLMs, so YMMV.
+much experience on LLMs, so if you're doing the largest-scale runs YMMV.
 
 ---
 
@@ -56,17 +48,16 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import torch
+import torch
 
 
 def _set_lr(optimizer: torch.optim.Optimizer | None, lr: float) -> None:
     if optimizer is None:
         return
     for pg in optimizer.param_groups:
-        # avoids recompilation when using torch.compile
+        # using tensor lr avoids recompilation on every step
+        # if you are using torch.compile on opt.step()
         if not isinstance(pg["lr"], torch.Tensor):
             pg["lr"] = torch.tensor(pg["lr"])
         pg["lr"].fill_(lr)  # in-place update
@@ -93,9 +84,25 @@ class Scheduler(ABC):
         ```python
         loss = ...
         loss.backward()
-        lr = scheduler(global_step, optimizer)
+        lr = scheduler(global_step, optimizer) # updates the opt in-place
         optimizer.step()
         optimizer.zero_grad()
+        ```
+
+        If you are compiling your optimiser step, simply run the
+        scheduler outside the compiled function (this avoids
+        recompilation due to branching scheduler logic):
+        ```
+        @torch.compile(fullgraph=False)
+        def step():
+            optimizer.step()
+            optimizer.zero_grad()
+
+        # during training loop...
+        loss = ...
+        loss.backward()
+        lr = scheduler(global_step, optimizer) # updates the opt in-place
+        step()
         ```
         """
         pass
@@ -114,12 +121,12 @@ class ConstantLR(Scheduler):
         global_step: int,
         optimizer: torch.optim.Optimizer | None = None,
     ) -> float:
-        if self.warmup_steps != 0 and global_step <= self.warmup_steps:
-            t = global_step / self.warmup_steps
-            new_lr = t * self.max_lr + (1 - t) * self.min_lr
+        if self.warmup_steps == 0:
+            t = 1.0
         else:
-            new_lr = self.max_lr
+            t = min(1.0, global_step / self.warmup_steps)
 
+        new_lr = t * self.max_lr + (1 - t) * self.min_lr
         new_lr = max(self.min_lr, min(self.max_lr, new_lr))  # clip if needed
         _set_lr(optimizer, new_lr)
         return new_lr
