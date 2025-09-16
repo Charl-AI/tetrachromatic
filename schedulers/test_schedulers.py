@@ -6,6 +6,8 @@ import schedulers as sch
 torch._logging.set_logs(recompiles=True)  # type: ignore
 
 
+# always passes, need to run with pytest -s and inspect output to see
+# if recompile warning is issued
 def test_recompile():
     model = torch.nn.Sequential(
         *[torch.nn.Linear(1024, 1024, False, device="cuda") for _ in range(10)]
@@ -15,18 +17,17 @@ def test_recompile():
     output.sum().backward()
 
     opt = torch.optim.Adam(model.parameters())
-    s = sch.InvSqrtLR(warmup_steps=5_000, constant_steps=45_000, max_lr=1e-4)
+    s = sch.InvSqrtLR(warmup_steps=10, constant_steps=50, max_lr=1e-4)
+    # s = sch.ConstantLR(max_lr=1e-4, warmup_steps=10)
 
     @torch.compile(fullgraph=False)
-    def fn(step, opt, s):
-        lr = s(step, opt)
+    def fn():
         opt.step()
-        return lr
 
-    # Warmup runs to compile the function
-    for step in range(5):
-        fn(step, opt, s)
-        print(opt.param_groups[0]["lr"])
+    for step in range(100):
+        print(f"{step=}")
+        _ = s(step, opt)
+        fn()
 
 
 def test_visualise():
